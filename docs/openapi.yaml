@@ -1,0 +1,383 @@
+openapi: 3.0.3
+info:
+  title: Concert Reservation Service API
+  version: 1.0.0
+  description: |
+    Concert reservation service with queue token, seat hold, point charge, and payment confirmation.
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: Queue
+  - name: Concert
+  - name: Reservation
+  - name: Points
+  - name: Payments
+
+components:
+  securitySchemes:
+    QueueTokenHeader:
+      type: apiKey
+      in: header
+      name: X-QUEUE-TOKEN
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    QueueToken:
+      type: object
+      properties:
+        tokenId:
+          type: string
+          format: uuid
+        userUuid:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [WAITING, ACTIVE, EXPIRED]
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        queuePosition:
+          type: integer
+          nullable: true
+          description: Optional. Current position in queue when WAITING.
+        estimatedWaitSeconds:
+          type: integer
+          nullable: true
+          description: Optional. Estimated waiting time.
+      required: [tokenId, userUuid, status, createdAt]
+
+    IssueQueueTokenRequest:
+      type: object
+      properties:
+        userUuid:
+          type: string
+          format: uuid
+      required: [userUuid]
+
+    AvailableDatesResponse:
+      type: object
+      properties:
+        dates:
+          type: array
+          items:
+            type: string
+            format: date
+      required: [dates]
+
+    Seat:
+      type: object
+      properties:
+        seatId:
+          type: integer
+          format: int64
+        concertDate:
+          type: string
+          format: date
+        seatNo:
+          type: integer
+          minimum: 1
+          maximum: 50
+        status:
+          type: string
+          enum: [AVAILABLE, HELD, CONFIRMED]
+        heldByUserUuid:
+          type: string
+          format: uuid
+          nullable: true
+        holdExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+      required: [seatId, concertDate, seatNo, status]
+
+    SeatsResponse:
+      type: object
+      properties:
+        seats:
+          type: array
+          items:
+            $ref: '#/components/schemas/Seat'
+      required: [seats]
+
+    HoldSeatRequest:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        seatNo:
+          type: integer
+          minimum: 1
+          maximum: 50
+      required: [date, seatNo]
+
+    HoldSeatResponse:
+      type: object
+      properties:
+        seat:
+          $ref: '#/components/schemas/Seat'
+      required: [seat]
+
+    ChargePointRequest:
+      type: object
+      properties:
+        userUuid:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+      required: [userUuid, amount]
+
+    ChargePointResponse:
+      type: object
+      properties:
+        userUuid:
+          type: string
+          format: uuid
+        balance:
+          type: integer
+          format: int64
+      required: [userUuid, balance]
+
+    GetPointResponse:
+      type: object
+      properties:
+        userUuid:
+          type: string
+          format: uuid
+        balance:
+          type: integer
+          format: int64
+      required: [userUuid, balance]
+
+    PayRequest:
+      type: object
+      properties:
+        seatId:
+          type: integer
+          format: int64
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+      required: [seatId, amount]
+
+    PayResponse:
+      type: object
+      properties:
+        paymentId:
+          type: integer
+          format: int64
+        seatId:
+          type: integer
+          format: int64
+        paidAt:
+          type: string
+          format: date-time
+      required: [paymentId, seatId, paidAt]
+
+security:
+  - QueueTokenHeader: []
+
+paths:
+  /api/queue/token:
+    post:
+      tags: [Queue]
+      summary: 대기열 토큰 발급
+      description: 사용자를 위한 대기열 토큰을 발급한다.
+      security: []  # token 발급은 토큰 불필요
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueQueueTokenRequest'
+      responses:
+        '200':
+          description: 대기열 토큰 발급 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueToken'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/queue/token/{tokenId}:
+    get:
+      tags: [Queue]
+      summary: 대기열 토큰 상태 조회
+      security: []  # 토큰 상태 조회는 토큰 불필요(본인토큰 확인 가정)
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 토큰 상태 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueToken'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/concerts/available-dates:
+    get:
+      tags: [Concert]
+      summary: 예약 가능한 날짜 목록 조회
+      responses:
+        '200':
+          description: Available dates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableDatesResponse'
+        '403':
+          description: Token invalid/expired/not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/concerts/{date}/seats:
+    get:
+      tags: [Concert]
+      summary: 날짜 정보로 예약 가능한 좌석 조회
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Seats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatsResponse'
+        '403':
+          description: Token invalid/expired/not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/reservations/hold:
+    post:
+      tags: [Reservation]
+      summary: 좌석 예약
+      description: 좌석 예약을 최대 5분간 점유한다. TTL 내에 결제가 완료되지 않으면 점유가 해제된다.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HoldSeatRequest' }
+      responses:
+        '200':
+          description: Held seat
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HoldSeatResponse' }
+        '409':
+          description: Seat already held/confirmed by another user or hold expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Token invalid/expired/not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/points/charge:
+    post:
+      tags: [Points]
+      summary: 포인트 충전
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChargePointRequest' }
+      responses:
+        '200':
+          description: Updated balance
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChargePointResponse' }
+        '400':
+          description: Invalid amount
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Token invalid/expired/not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/points/{userUuid}:
+    get:
+      tags: [Points]
+      summary: 포인트 잔액 조회
+      parameters:
+        - name: userUuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 포인트 잔액
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GetPointResponse' }
+        '403':
+          description: Token invalid/expired/not active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/payments:
+    post:
+      tags: [Payments]
+      summary: 결제 및 좌석 예약 완료
+      description: 포인트 차감, 결제 내역 생성, 좌석 예약 완료, 대기열 토큰 만료
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PayRequest' }
+      responses:
+        '200':
+          description: Payment success
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PayResponse' }
+        '409':
+          description: Insufficient points / hold expired / seat not held
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Token invalid/expired/not active or not seat holder
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
